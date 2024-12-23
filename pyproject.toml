@@ -1,0 +1,15 @@
+[project]
+name = "pyft"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "arrio", email = "arrio@mail.fowo.eu.org"},
+]
+dependencies = ["pytest>=8.3.4", "requests>=2.32.3"]
+requires-python = "==3.13.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
