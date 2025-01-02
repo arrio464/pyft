@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -15,6 +16,27 @@ def generate_file_list(directory):
 
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    # Speed limit in bytes per second (e.g., 1MB/s)
+    # SPEED_LIMIT = 1024 * 1024
+    SPEED_LIMIT = 8192
+
+    def throttled_read(self, file_obj, chunk_size=8192):
+        """Read file with speed limiting."""
+        while True:
+            start_time = time.time()
+
+            chunk = file_obj.read(chunk_size)
+            if not chunk:
+                break
+
+            yield chunk
+
+            # Calculate sleep time to maintain speed limit
+            elapsed = time.time() - start_time
+            expected_time = len(chunk) / self.SPEED_LIMIT
+            if elapsed < expected_time:
+                time.sleep(expected_time - elapsed)
+
     def do_GET(self):
         parsed_path = urlparse(self.path)
         if parsed_path.path == "/download":
@@ -100,13 +122,53 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "File not found."}).encode())
             return
 
-        self.send_response(200)
-        self.send_header("Content-Disposition", f"attachment; filename={file_name}")
+        file_size = os.path.getsize(file_path)
+        start_byte = 0
+        end_byte = file_size - 1
+
+        # Handle Range header
+        range_header = self.headers.get("Range")
+        if range_header:
+            try:
+                range_match = range_header.replace("bytes=", "").split("-")
+                start_byte = int(range_match[0])
+                if range_match[1]:
+                    end_byte = int(range_match[1])
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid range header"}).encode())
+                return
+
+            if start_byte >= file_size:
+                self.send_response(416)  # Range Not Satisfiable
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.end_headers()
+                return
+
+            self.send_response(206)  # Partial Content
+            self.send_header(
+                "Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}"
+            )
+        else:
+            self.send_response(200)
+
+        content_length = end_byte - start_byte + 1
+        self.send_header("Content-Length", content_length)
         self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f"attachment; filename={file_name}")
+        self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
 
         with open(file_path, "rb") as f:
-            self.wfile.write(f.read())
+            f.seek(start_byte)
+            bytes_to_read = content_length
+            while bytes_to_read > 0:
+                chunk_size = min(8192, bytes_to_read)
+                for chunk in self.throttled_read(f, chunk_size):
+                    self.wfile.write(chunk)
+                    bytes_to_read -= len(chunk)
 
     def handle_upload(self, parsed_path):
         query_params = parse_qs(parsed_path.query)
