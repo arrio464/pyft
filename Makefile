@@ -3,9 +3,18 @@ TERMINAL = wt
 test:
 	pytest tests
 
-test_server:
+test-server:
 	pytest tests/test_server.py
 
-test_client:
+test-client:
 	pytest tests/test_client.py
 
+run: run-server run-clients
+
+run-server:
+	echo "Starting server..."
+	$(TERMINAL) --window _pyft new-tab --title "Server" --command pdm run python -m src.pyft.server
+
+run-clients:
+	echo "Starting clients..."
+	$(TERMINAL) --window _pyft new-tab --title "Client" --command pdm run python -m src.pyft.client
