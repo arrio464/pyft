@@ -194,7 +194,7 @@ class Downloader:
                     flush=True,
                 )
                 time.sleep(0.1)
-            print("\rProgress: 100.0% (complete)", flush=True)
+            print("\rProgress: 100.0% (complete)             ", flush=True)  # FIXME
 
         print("\nDownload complete!")
 
@@ -202,6 +202,104 @@ class Downloader:
         progress_file = f"{self.output_file}.progress"
         if os.path.exists(progress_file):
             os.remove(progress_file)
+
+
+class Uploader:
+    def __init__(
+        self,
+        url: str,
+        input_file: str,
+        token: str,
+        num_threads: int = 4,
+        chunk_size: int = 8192,
+    ):
+        self.url = url
+        self.file_name = os.path.basename(input_file)
+        self.file_size = os.path.getsize(input_file)
+        self.token = token
+        self.num_threads = num_threads
+        self.chunk_size = chunk_size
+        self.input_file = input_file
+        self.chunks: List[ChunkInfo] = []
+        self.lock = threading.Lock()
+        self.uploaded = 0
+
+    def _upload_chunk(self, chunk_id: int):
+        """Upload a specific chunk of the file."""
+        chunk = self.chunks[chunk_id]
+        headers = {
+            "X-File-Name": self.file_name,
+            "Content-Range": f"bytes {chunk.start}-{chunk.end}/{self.file_size}",
+        }
+
+        try:
+            with open(self.input_file, "rb") as f:
+                f.seek(chunk.start)
+                chunk_data = f.read(chunk.end - chunk.start + 1)
+
+            response = requests.post(
+                self.url,
+                data=chunk_data,
+                headers=headers,
+                params={"token": self.token, "file": self.file_name},
+            )
+            response.raise_for_status()
+
+            with self.lock:
+                chunk.downloaded = len(
+                    chunk_data
+                )  # using downloaded as upload progress
+                self.uploaded += len(chunk_data)
+                chunk.complete = True
+
+        except Exception as e:
+            print(f"Error uploading chunk {chunk_id}: {str(e)}")
+            return False
+
+        return True
+
+    def upload(self):
+        """Start the upload process."""
+        print(f"Starting multi-threaded upload. File size: {self.file_size} bytes")
+
+        # Calculate chunk sizes
+        chunk_size = self.file_size // self.num_threads
+        for i in range(self.num_threads):
+            start = i * chunk_size
+            end = (
+                start + chunk_size - 1
+                if i < self.num_threads - 1
+                else self.file_size - 1
+            )
+            self.chunks.append(ChunkInfo(start, end))
+
+        # Start upload threads
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            futures = []
+            for i in range(self.num_threads):
+                if not self.chunks[i].complete:
+                    futures.append(executor.submit(self._upload_chunk, i))
+
+            # Monitor progress
+            while self.uploaded < self.file_size:
+                progress = (self.uploaded / self.file_size) * 100
+                print(
+                    f"\rProgress: {progress:.1f}% ({self.uploaded}/{self.file_size} bytes)",
+                    end="",
+                    flush=True,
+                )
+                time.sleep(0.1)
+
+                # Check if any chunks failed
+                failed = any(f.done() and not f.result() for f in futures)
+                if failed:
+                    print("\nUpload failed due to errors in one or more chunks")
+                    return False
+
+            print("\rProgress: 100.0% (complete)", flush=True)
+
+        print("\nUpload complete!")
+        return True
 
 
 class Core:
@@ -234,6 +332,18 @@ class Core:
 
         raise FileNotFoundError(f"File {file_name} not found")
 
+    def upload_file(self, file_path: str):
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File {file_path} not found")
+
+        u = Uploader(
+            f"{self.server_url}/upload",
+            input_file=file_path,
+            token=self.token,
+            num_threads=self.threads,
+        )
+        return u.upload()
+
 
 if __name__ == "__main__":
     server_url = "http://127.0.0.1:23536"
@@ -252,11 +362,25 @@ if __name__ == "__main__":
     core = Core(server_url, token)
 
     while True:
-        print("Available files:")
-        for i, file in enumerate(core.files):
-            print(f"{i}: {file['name']}")
+        print("\nMenu:")
+        print("1. List files")
+        print("2. Download file")
+        print("3. Upload file")
+        print("4. Exit")
 
-        choice = input("Enter the number of the file you want to download: ")
-        file_index = int(choice)
-        file = core.files[file_index]
-        core.download_file(file["name"])
+        choice = input("Enter your choice: ")
+
+        if choice == "1":
+            files = core.list_files()
+            print("Available files:")
+            for file in files:
+                print(f"{file['name']} ({file['size']} bytes)")
+        elif choice == "2":
+            file_name = input("Enter the name of the file to download: ")
+            core.download_file(file_name)
+        elif choice == "3":
+            file_path = input("Enter the path of the file to upload: ")
+            core.upload_file(file_path)
+        elif choice == "4":
+            print("Goodbye!")
+            break
