@@ -17,4 +17,4 @@ run-server:
 
 run-clients:
 	echo "Starting clients..."
-	$(TERMINAL) --window _pyft new-tab --title "Client" --command pdm run python -m src.pyft.client
+	$(TERMINAL) --window _pyft new-tab --title "Client" --command pdm run python -m src.pyft.client -u user1 -p password1

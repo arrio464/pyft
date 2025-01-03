@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .utils import validate_token
@@ -15,7 +15,7 @@ def generate_file_list(directory):
     ]
 
 
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+class ThreadedHTTPRequestHandler(BaseHTTPRequestHandler):
     # Speed limit in bytes per second (e.g., 1MB/s)
     # SPEED_LIMIT = 1024 * 1024
     SPEED_LIMIT = 8192
@@ -218,10 +218,19 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Upload failed: {str(e)}"}).encode())
 
 
+def run_server(host="0.0.0.0", port=8080):
+    server_address = (host, port)
+    httpd = ThreadingHTTPServer(server_address, ThreadedHTTPRequestHandler)
+    print(f"Starting threaded server on {host}:{port}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        httpd.server_close()
+
+
 if __name__ == "__main__":
     host = "127.0.0.1"
     port = 23536
 
-    server = HTTPServer((host, port), SimpleHTTPRequestHandler)
-    print(f"Server started at http://{host}:{port}")
-    server.serve_forever()
+    run_server(host, port)

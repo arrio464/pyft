@@ -1,234 +1,262 @@
 import cmd
 import os
-from typing import BinaryIO, Callable, Dict, List, Optional
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import requests
-from requests import Response
-from tqdm import tqdm
 
 from .utils import generate_token
 
 
-class FileTransferBase:
-    def __init__(self, server_url: str, token: str):
-        self.server_url = server_url.rstrip("/")
-        self.token = token
-        self._progress_callback: Optional[Callable[[int, int], None]] = None
+@dataclass
+class ChunkInfo:
+    start: int
+    end: int
+    downloaded: int = 0
+    complete: bool = False
 
-    def set_progress_callback(self, callback: Callable[[int, int], None]) -> None:
-        """Set callback for progress updates: callback(bytes_processed, total_bytes)"""
-        self._progress_callback = callback
+
+class Downloader:
+    def __init__(
+        self, url: str, output_file: str, num_threads: int = 4, chunk_size: int = 8192
+    ):
+        self.url = url
+        self.output_file = output_file
+        self.num_threads = num_threads
+        self.chunk_size = chunk_size
+        self.chunks: List[ChunkInfo] = []
+        self.lock = threading.Lock()
+        self.progress_lock = threading.Lock()
+        self.total_size = 0
+        self.downloaded = 0
+
+    def _get_file_size(self) -> Optional[int]:
+        """Try different methods to get the file size."""
+        # First try a HEAD request
+        response = requests.head(self.url, allow_redirects=True)
+        size = response.headers.get("content-length")
+        if size and size != "0" and size != "357":
+            return int(size)
+
+        # If HEAD doesn't work, try a GET request with stream
+        print("HEAD request didn't provide file size. Trying GET request...")
+        response = requests.get(self.url, stream=True, allow_redirects=True)
+        size = response.headers.get("content-length")
+        if size:
+            response.close()
+            return int(size)
+
+        # If still no size, we'll need to download the file first
+        print("Server didn't provide file size. Will download single-threaded first...")
+        return None
+
+    def _single_thread_download(self) -> int:
+        """Download the file using a single thread and return the file size."""
+        temp_file = f"{self.output_file}.temp"
+        downloaded_size = 0
+
+        with requests.get(self.url, stream=True) as response:
+            response.raise_for_status()
+            with open(temp_file, "wb") as f:
+                for chunk in response.iter_content(chunk_size=self.chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        print(
+                            f"\rDownloaded: {downloaded_size} bytes", end="", flush=True
+                        )
+
+        # Move temp file to final location
+        if os.path.exists(self.output_file):
+            os.remove(self.output_file)
+        os.rename(temp_file, self.output_file)
+        print(f"\nSingle-thread download complete. File size: {downloaded_size} bytes")
+        return downloaded_size
+
+    def _load_progress(self) -> Dict[int, int]:
+        """Load download progress from progress file if it exists."""
+        progress_file = f"{self.output_file}.progress"
+        if os.path.exists(progress_file):
+            try:
+                with open(progress_file, "r") as f:
+                    return {
+                        int(chunk): int(pos)
+                        for line in f
+                        for chunk, pos in [line.strip().split(":")]
+                    }
+            except:
+                return {}
+        return {}
+
+    def _save_progress(self):
+        """Save current download progress to file."""
+        progress_file = f"{self.output_file}.progress"
+        with open(progress_file, "w") as f:
+            for i, chunk in enumerate(self.chunks):
+                f.write(f"{i}:{chunk.downloaded}\n")
+
+    def _download_chunk(self, chunk_id: int):
+        """Download a specific chunk of the file."""
+        chunk = self.chunks[chunk_id]
+        headers = {"Range": f"bytes={chunk.start + chunk.downloaded}-{chunk.end}"}
+
+        try:
+            response = requests.get(self.url, headers=headers, stream=True)
+
+            # Check if server supports range requests
+            if response.status_code != 206:
+                raise ValueError("Server doesn't support range requests")
+
+            with open(self.output_file, "rb+") as f:
+                f.seek(chunk.start + chunk.downloaded)
+
+                for data in response.iter_content(chunk_size=self.chunk_size):
+                    if not data:
+                        break
+
+                    with self.lock:
+                        f.write(data)
+                        chunk.downloaded += len(data)
+                        self.downloaded += len(data)
+
+                    # Save progress periodically
+                    if chunk.downloaded % (self.chunk_size * 10) == 0:
+                        with self.progress_lock:
+                            self._save_progress()
+
+            chunk.complete = True
+
+        except Exception as e:
+            print(f"Error downloading chunk {chunk_id}: {str(e)}")
+
+    def download(self):
+        """Start the download process."""
+        # First try to get the file size
+        self.total_size = self._get_file_size()
+
+        # If we couldn't get the file size, use single-threaded download
+        if self.total_size is None:
+            self.total_size = self._single_thread_download()
+            print(
+                "Single-threaded download completed. No need for multi-threaded resume."
+            )
+            return
+
+        # Test if server supports range requests
+        test_response = requests.get(self.url, headers={"Range": "bytes=0-0"})
+        if test_response.status_code != 206:
+            print(
+                "Server doesn't support range requests. Using single-threaded download..."
+            )
+            self.total_size = self._single_thread_download()
+            return
+
+        print(f"Starting multi-threaded download. File size: {self.total_size} bytes")
+
+        # Create output file if it doesn't exist
+        if not os.path.exists(self.output_file):
+            with open(self.output_file, "wb") as f:
+                f.seek(self.total_size - 1)
+                f.write(b"\0")
+
+        # Load previous progress if any
+        progress = self._load_progress()
+
+        # Calculate chunk sizes
+        chunk_size = self.total_size // self.num_threads
+        for i in range(self.num_threads):
+            start = i * chunk_size
+            end = (
+                start + chunk_size - 1
+                if i < self.num_threads - 1
+                else self.total_size - 1
+            )
+            downloaded = progress.get(i, 0)
+            self.chunks.append(ChunkInfo(start, end, downloaded))
+            self.downloaded += downloaded
+
+        # Start download threads
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            futures = []
+            for i in range(self.num_threads):
+                if not self.chunks[i].complete:
+                    futures.append(executor.submit(self._download_chunk, i))
+
+            # Monitor progress
+            while self.downloaded < self.total_size:
+                progress = (self.downloaded / self.total_size) * 100
+                print(
+                    f"\rProgress: {progress:.1f}% ({self.downloaded}/{self.total_size} bytes)",
+                    end="",
+                    flush=True,
+                )
+                time.sleep(0.1)
+            print("\rProgress: 100.0% (complete)", flush=True)
+
+        print("\nDownload complete!")
+
+        # Clean up progress file
+        progress_file = f"{self.output_file}.progress"
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
+
+
+class Core:
+    def __init__(self, server_url: str, token: str, threads: int = 4):
+        self.server_url = server_url
+        self.token = token
+        self.threads = threads
+        self.files = self.list_files()
 
     def list_files(self) -> List[Dict[str, str]]:
-        """Get list of available files"""
         response = requests.get(self.server_url, params={"token": self.token})
         response.raise_for_status()
         return response.json()["files"]
 
-    def download_file(self, file_name: str, output_dir: Optional[str] = None) -> str:
-        """Download a file and return its local path"""
-        response = self._start_download(file_name)
-        return self._process_download(response, file_name, output_dir)
+    def _update_files_list(self):
+        self.files = self.list_files()
 
-    def upload_file(self, file_path: str) -> dict:
-        """Upload a file and return server response"""
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
-
-        with open(file_path, "rb") as f:
-            return self._process_upload(f, file_name, file_size)
-
-    def _start_download(self, file_name: str) -> Response:
-        """Initialize file download"""
-        response = requests.get(
-            f"{self.server_url}/download",
-            params={"token": self.token, "file": file_name},
-            stream=True,
-        )
-        response.raise_for_status()
-        return response
-
-    def _process_download(
-        self, response: Response, file_name: str, output_dir: Optional[str] = None
-    ) -> str:
-        """Process download stream and save to file"""
+    def download_file(self, file_name: str, output_dir: Optional[str] = None):
+        self._update_files_list()
         output_dir = output_dir or "downloads"
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, file_name)
-
-        total_size = int(response.headers.get("content-length", 0))
-        bytes_downloaded = 0
-
-        with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    bytes_downloaded += len(chunk)
-                    if self._progress_callback:
-                        self._progress_callback(bytes_downloaded, total_size)
-
-        return output_path
-
-    def _process_upload(
-        self, file_obj: BinaryIO, file_name: str, file_size: int
-    ) -> dict:
-        """Process file upload"""
-        bytes_uploaded = 0
-
-        def upload_callback(chunk: bytes) -> bytes:
-            nonlocal bytes_uploaded
-            bytes_uploaded += len(chunk)
-            if self._progress_callback:
-                self._progress_callback(bytes_uploaded, file_size)
-            return chunk
-
-        response = requests.post(
-            f"{self.server_url}/upload",
-            params={"token": self.token},
-            headers={"X-File-Name": file_name},
-            data=iter(lambda: upload_callback(file_obj.read(8192)), b""),
-        )
-
-        response.raise_for_status()
-        return response.json()
-
-
-class TUIFileTransfer(FileTransferBase):
-    """Terminal UI implementation of file transfer"""
-
-    def download_file(self, file_name: str, output_dir: None = None) -> str:
-        pbar = None
-
-        def progress_callback(current: int, total: int):
-            nonlocal pbar
-            if pbar is None and total > 0:
-                pbar = tqdm(
-                    total=total,
-                    unit="B",
-                    unit_scale=True,
-                    desc=f"Downloading {file_name}",
+        for file in self.files:
+            if file["name"] == file_name:
+                d = Downloader(
+                    file["url"],
+                    output_file=os.path.join(output_dir, file_name),
+                    num_threads=self.threads,
                 )
-            if pbar:
-                pbar.n = current
-                pbar.refresh()
-
-        self.set_progress_callback(progress_callback)
-        try:
-            result = super().download_file(file_name, output_dir)
-            if pbar:
-                pbar.close()
-            return result
-        except:
-            if pbar:
-                pbar.close()
-            raise
-
-    def upload_file(self, file_path: str) -> dict:
-        pbar = None
-
-        def progress_callback(current: int, total: int):
-            nonlocal pbar
-            if pbar is None and total > 0:
-                pbar = tqdm(
-                    total=total,
-                    unit="B",
-                    unit_scale=True,
-                    desc=f"Uploading {file_path}",
-                )
-            if pbar:
-                pbar.n = current
-                pbar.refresh()
-
-        self.set_progress_callback(progress_callback)
-        try:
-            result = super().upload_file(file_path)
-            if pbar:
-                pbar.close()
-            return result
-        except:
-            if pbar:
-                pbar.close()
-            raise
-
-
-class TUI(cmd.Cmd):
-    """Command-line interface for file transfer operations"""
-
-    intro = "Welcome to the File Transfer TUI. Type help or ? to list commands."
-    prompt = "(file-transfer) "
-
-    def __init__(self, file_transfer: TUIFileTransfer):
-        super().__init__()
-        self.file_transfer = file_transfer
-
-    def do_list(self, arg):
-        """List files on the server: list"""
-        try:
-            files = self.file_transfer.list_files()
-            if not files:
-                print("No files found on the server.")
+                d.download()
                 return
 
-            for file_info in files:
-                print(f"{file_info['name']}\t{file_info['size']} bytes")
-        except Exception as e:
-            print(f"Error listing files: {e}")
-
-    def do_download(self, arg):
-        """Download a file from the server: download <file_name>"""
-        args = arg.split()
-        if len(args) < 1:
-            print("Usage: download <file_name>")
-            return
-
-        file_name = args[0]
-        output_dir = args[1] if len(args) > 1 else None
-
-        try:
-            result = self.file_transfer.download_file(file_name, output_dir)
-            print(f"Downloaded {file_name} to {result}")
-        except Exception as e:
-            print(f"Error downloading file: {e}")
-
-    def do_upload(self, arg):
-        """Upload a file to the server: upload <file_path>"""
-        args = arg.split()
-        if len(args) < 1:
-            print("Usage: upload <file_path>")
-            return
-
-        file_path = args[0]
-        if not os.path.exists(file_path):
-            print("File does not exist.")
-            return
-
-        try:
-            result = self.file_transfer.upload_file(file_path)
-            print(f"Uploaded {file_path}: {result}")
-        except Exception as e:
-            print(f"Error uploading file: {e}")
-
-    def do_exit(self, arg):
-        """Exit the TUI: exit"""
-        print("Exiting...")
-        return True
-
-    def do_quit(self, arg):
-        """Exit the TUI: quit"""
-        return self.do_exit(arg)
-
-
-def tui(server: str, token: str):
-    file_transfer = TUIFileTransfer(server, token)
-    TUI(file_transfer).cmdloop()
+        raise FileNotFoundError(f"File {file_name} not found")
 
 
 if __name__ == "__main__":
     server_url = "http://127.0.0.1:23536"
+    import argparse
 
-    username = input("Enter your username: ")
-    password = input("Enter your password: ")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-u", "--username", help="Username for authentication")
+    parser.add_argument("-p", "--password", help="Password for authentication")
+    args = parser.parse_args()
+
+    username = args.username or input("Enter your username: ")
+    password = args.password or input("Enter your password: ")
 
     token = generate_token(username, password)
     print(f"Generated token: {token}")
-    tui(server_url, token)
+    core = Core(server_url, token)
+
+    while True:
+        print("Available files:")
+        for i, file in enumerate(core.files):
+            print(f"{i}: {file['name']}")
+
+        choice = input("Enter the number of the file you want to download: ")
+        file_index = int(choice)
+        file = core.files[file_index]
+        core.download_file(file["name"])
