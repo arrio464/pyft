@@ -217,7 +217,7 @@ class Uploader:
         self.file_name = os.path.basename(input_file)
         self.file_size = os.path.getsize(input_file)
         self.token = token
-        self.num_threads = num_threads
+        self.num_threads = 1 if num_threads < chunk_size else num_threads
         self.chunk_size = chunk_size
         self.input_file = input_file
         self.chunks: List[ChunkInfo] = []
@@ -308,6 +308,8 @@ class Core:
         self.token = token
         self.threads = threads
         self.files = self.list_files()
+        if not os.path.isdir("downloads"):
+            os.mkdir("downloads")
 
     def list_files(self) -> List[Dict[str, str]]:
         response = requests.get(self.server_url, params={"token": self.token})
