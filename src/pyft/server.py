@@ -163,14 +163,19 @@ class ThreadedHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
 
-        with open(file_path, "rb") as f:
-            f.seek(start_byte)
-            bytes_to_read = content_length
-            while bytes_to_read > 0:
-                chunk_size = min(8192, bytes_to_read)
-                for chunk in self.throttled_read(f, chunk_size):
-                    self.wfile.write(chunk)
-                    bytes_to_read -= len(chunk)
+        try:
+            with open(file_path, "rb") as f:
+                f.seek(start_byte)
+                bytes_to_read = content_length
+                while bytes_to_read > 0:
+                    chunk_size = min(8192, bytes_to_read)
+                    for chunk in self.throttled_read(f, chunk_size):
+                        self.wfile.write(chunk)
+                        bytes_to_read -= len(chunk)
+        except ConnectionAbortedError:
+            print("A connection was aborted... Not a big deal.")
+        except Exception as e:
+            print(f"Error at sending file: {str(e)}")
 
     def handle_upload(self, parsed_path):
         query_params = parse_qs(parsed_path.query)
