@@ -91,7 +91,7 @@ class ThreadedHTTPRequestHandler(BaseHTTPRequestHandler):
                 {
                     "name": os.path.basename(file),
                     "size": os.path.getsize(file),
-                    "url": f"http://{self.server.server_address[0]}:{self.server.server_address[1]}/download?token={token}&file={os.path.basename(file)}",
+                    "url": f"/download?token={token}&file={os.path.basename(file)}",
                 }
                 for file in file_list
             ]
