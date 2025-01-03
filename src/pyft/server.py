@@ -1,5 +1,7 @@
 import json
 import os
+import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -218,7 +220,7 @@ class ThreadedHTTPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Upload failed: {str(e)}"}).encode())
 
 
-def run_server(host="0.0.0.0", port=8080):
+def run_v4_server(host="0.0.0.0", port=23536):
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, ThreadedHTTPRequestHandler)
     print(f"Starting threaded server on {host}:{port}")
@@ -229,8 +231,21 @@ def run_server(host="0.0.0.0", port=8080):
         httpd.server_close()
 
 
-if __name__ == "__main__":
-    host = "127.0.0.1"
-    port = 23536
+class ThreadingIPv6HTTPServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
 
-    run_server(host, port)
+
+def run_v6_server(host="::", port=23536):
+    server_address = (host, port)
+    httpd = ThreadingIPv6HTTPServer(server_address, ThreadedHTTPRequestHandler)
+    print(f"Starting threaded server on {host}:{port}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_v4_server).start()
+    threading.Thread(target=run_v6_server).start()

@@ -348,7 +348,8 @@ class Core:
 
 
 if __name__ == "__main__":
-    server_url = "http://127.0.0.1:23536"
+    # server_url = "http://127.0.0.1:23536"
+    server_url = "http://[::1]:23536"
     import argparse
 
     parser = argparse.ArgumentParser()
