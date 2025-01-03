@@ -325,7 +325,7 @@ class Core:
         for file in self.files:
             if file["name"] == file_name:
                 d = Downloader(
-                    self.url + file["url"],
+                    self.server_url + file["url"],
                     output_file=os.path.join(output_dir, file_name),
                     num_threads=self.threads,
                 )
