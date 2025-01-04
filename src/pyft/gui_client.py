@@ -372,15 +372,86 @@ class FileTransferGUI(Core):
         self.root.mainloop()
 
 
+class LoginGUI:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("Login")
+        self.master.geometry("400x300")
+        self.master.resizable(False, False)
+
+        self.frame = ttk.Frame(self.master, padding=20)
+        self.frame.pack(fill="both", expand=True)
+
+        ttk.Label(self.frame, text="文件传输", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, columnspan=2, pady=10
+        )
+
+        # Server URL
+        ttk.Label(self.frame, text="Server URL:", font=("Arial", 10)).grid(
+            row=1, column=0, sticky="e", pady=10, padx=5
+        )
+        self.server_var = tk.StringVar()
+        self.server_entry = ttk.Entry(
+            self.frame, textvariable=self.server_var, font=("Arial", 12)
+        )
+        self.server_entry.grid(row=1, column=1, pady=10, padx=5)
+
+        # Username
+        ttk.Label(self.frame, text="Username:", font=("Arial", 10)).grid(
+            row=2, column=0, sticky="e", pady=10, padx=5
+        )
+        self.username_var = tk.StringVar()
+        self.username_entry = ttk.Entry(
+            self.frame, textvariable=self.username_var, font=("Arial", 12)
+        )
+        self.username_entry.grid(row=2, column=1, pady=10, padx=5)
+
+        # Password
+        ttk.Label(self.frame, text="Password:", font=("Arial", 10)).grid(
+            row=3, column=0, sticky="e", pady=10, padx=5
+        )
+        self.password_var = tk.StringVar()
+        self.password_entry = ttk.Entry(
+            self.frame, textvariable=self.password_var, show="*", font=("Arial", 12)
+        )
+        self.password_entry.grid(row=3, column=1, pady=10, padx=5)
+
+        # Error message label (commented out in your code, uncomment if needed)
+        # self.error_message = tk.StringVar()
+        # self.error_label = ttk.Label(self.frame, textvariable=self.error_message, foreground="red", font=("Arial", 10))
+        # self.error_label.grid(row=4, column=0, columnspan=2, pady=5)
+
+        self.login_button = ttk.Button(self.frame, text="Login", command=self.try_login)
+        self.login_button.grid(row=5, column=0, columnspan=2, pady=20)
+
+        self.username_entry.focus()
+
+    def try_login(self):
+        url = self.server_var.get()
+        username = self.username_var.get()
+        password = self.password_var.get()
+
+        # Here you would add the logic to validate the login credentials
+        # For example, you could call a function that attempts to log in and returns True or False
+        # If the login is successful, proceed with generating token and opening the FileTransferGUI
+        if self.validate_login(url, username, password):
+            from .utils import generate_token
+
+            token = generate_token(username, password)
+            gui = FileTransferGUI(url, token)
+            gui.run()
+            self.master.destroy()  # Close the login window after successful login
+        else:
+            print("Wrong password or username")
+            input("Press Enter to continue...")
+
+    def validate_login(self, url, username, password):
+        # Add your validation logic here
+        # Return True if login is successful, otherwise return False
+        return True  # Placeholder for actual validation logic
+
+
 if __name__ == "__main__":
-    import sys
-
-    from .utils import generate_token
-
-    server_url = "http://[::1]:23536"
-    username = sys.argv[1] if len(sys.argv) > 1 else input("Username: ")
-    password = sys.argv[2] if len(sys.argv) > 2 else input("Password: ")
-
-    token = generate_token(username, password)
-    gui = FileTransferGUI(server_url, token)
-    gui.run()
+    root = tk.Tk()
+    app = LoginGUI(root)
+    root.mainloop()
