@@ -21,7 +21,13 @@ class ChunkInfo:
 
 class Downloader:
     def __init__(
-        self, url: str, output_file: str, num_threads: int = 4, chunk_size: int = 8192
+        self,
+        url: str,
+        output_file: str,
+        num_threads: int = 4,
+        chunk_size: int = 8192,
+        progress_callback=None,
+        pause_event=None,
     ):
         self.url = url
         self.output_file = output_file
@@ -32,6 +38,10 @@ class Downloader:
         self.progress_lock = threading.Lock()
         self.total_size = 0
         self.downloaded = 0
+        self.progress_callback = progress_callback
+        self.pause_event = pause_event
+        self.last_update = time.time()
+        self.speed = 0
 
     def _get_file_size(self) -> Optional[int]:
         """Try different methods to get the file size."""
@@ -98,10 +108,23 @@ class Downloader:
             for i, chunk in enumerate(self.chunks):
                 f.write(f"{i}:{chunk.downloaded}\n")
 
+    def _update_progress(self, bytes_added: int):
+        current_time = time.time()
+        time_diff = current_time - self.last_update
+        if time_diff >= 0.1:  # Update every 100ms
+            self.speed = bytes_added / time_diff / 1024  # Convert to KB/s
+            if self.progress_callback:
+                progress = (self.downloaded / self.total_size) * 100
+                self.progress_callback(progress, self.speed)
+            self.last_update = current_time
+            bytes_added = 0
+        return bytes_added
+
     def _download_chunk(self, chunk_id: int):
         """Download a specific chunk of the file."""
         chunk = self.chunks[chunk_id]
         headers = {"Range": f"bytes={chunk.start + chunk.downloaded}-{chunk.end}"}
+        bytes_since_update = 0
 
         try:
             response = requests.get(self.url, headers=headers, stream=True)
@@ -117,10 +140,15 @@ class Downloader:
                     if not data:
                         break
 
+                    if self.pause_event and self.pause_event.is_set():
+                        return True
+
                     with self.lock:
                         f.write(data)
                         chunk.downloaded += len(data)
                         self.downloaded += len(data)
+                        bytes_since_update += len(data)
+                        bytes_since_update = self._update_progress(bytes_since_update)
 
                     # Save progress periodically
                     if chunk.downloaded % (self.chunk_size * 10) == 0:
@@ -128,9 +156,11 @@ class Downloader:
                             self._save_progress()
 
             chunk.complete = True
+            return True
 
         except Exception as e:
             print(f"Error downloading chunk {chunk_id}: {str(e)}")
+            return False
 
     def download(self):
         """Start the download process."""
@@ -212,6 +242,8 @@ class Uploader:
         token: str,
         num_threads: int = 4,
         chunk_size: int = 8192,
+        progress_callback=None,
+        pause_event=None,
     ):
         self.url = url
         self.file_name = os.path.basename(input_file)
@@ -223,6 +255,22 @@ class Uploader:
         self.chunks: List[ChunkInfo] = []
         self.lock = threading.Lock()
         self.uploaded = 0
+        self.progress_callback = progress_callback
+        self.pause_event = pause_event
+        self.last_update = time.time()
+        self.speed = 0
+
+    def _update_progress(self, bytes_added: int):
+        current_time = time.time()
+        time_diff = current_time - self.last_update
+        if time_diff >= 0.1:  # Update every 100ms
+            self.speed = bytes_added / time_diff / 1024  # Convert to KB/s
+            if self.progress_callback:
+                progress = (self.uploaded / self.file_size) * 100
+                self.progress_callback(progress, self.speed)
+            self.last_update = current_time
+            bytes_added = 0
+        return bytes_added
 
     def _upload_chunk(self, chunk_id: int):
         """Upload a specific chunk of the file."""
@@ -231,8 +279,12 @@ class Uploader:
             "X-File-Name": self.file_name,
             "Content-Range": f"bytes {chunk.start}-{chunk.end}/{self.file_size}",
         }
+        bytes_since_update = 0
 
         try:
+            if self.pause_event and self.pause_event.is_set():
+                return True
+
             with open(self.input_file, "rb") as f:
                 f.seek(chunk.start)
                 chunk_data = f.read(chunk.end - chunk.start + 1)
@@ -246,17 +298,16 @@ class Uploader:
             response.raise_for_status()
 
             with self.lock:
-                chunk.downloaded = len(
-                    chunk_data
-                )  # using downloaded as upload progress
+                chunk.downloaded = len(chunk_data)
                 self.uploaded += len(chunk_data)
+                bytes_since_update = self._update_progress(len(chunk_data))
                 chunk.complete = True
+
+            return True
 
         except Exception as e:
             print(f"Error uploading chunk {chunk_id}: {str(e)}")
             return False
-
-        return True
 
     def upload(self):
         """Start the upload process."""
@@ -319,7 +370,13 @@ class Core:
     def _update_files_list(self):
         self.files = self.list_files()
 
-    def download_file(self, file_name: str, output_dir: Optional[str] = None):
+    def download_file(
+        self,
+        file_name: str,
+        output_dir: Optional[str] = None,
+        progress_callback=None,
+        pause_event=None,
+    ):
         self._update_files_list()
         output_dir = output_dir or "downloads"
         for file in self.files:
@@ -328,13 +385,15 @@ class Core:
                     self.server_url + file["url"],
                     output_file=os.path.join(output_dir, file_name),
                     num_threads=self.threads,
+                    progress_callback=progress_callback,
+                    pause_event=pause_event,
                 )
                 d.download()
                 return
 
         raise FileNotFoundError(f"File {file_name} not found")
 
-    def upload_file(self, file_path: str):
+    def upload_file(self, file_path: str, progress_callback=None, pause_event=None):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File {file_path} not found")
 
@@ -343,6 +402,8 @@ class Core:
             input_file=file_path,
             token=self.token,
             num_threads=self.threads,
+            progress_callback=progress_callback,
+            pause_event=pause_event,
         )
         return u.upload()
 
