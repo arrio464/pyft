@@ -1,6 +1,6 @@
 import hashlib
 
-from .user_db import users_db
+from pyft.user_db import users_db
 
 
 def generate_token(username, password):

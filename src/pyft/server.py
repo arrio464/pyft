@@ -6,7 +6,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from .utils import validate_token
+from pyft.utils import validate_token
 
 
 def generate_file_list(directory):
@@ -240,7 +240,7 @@ class ThreadingIPv6HTTPServer(ThreadingHTTPServer):
     address_family = socket.AF_INET6
 
 
-def run_v6_server(host="::", port=23536):
+def run_v6_server(host="::", port=23537):
     server_address = (host, port)
     httpd = ThreadingIPv6HTTPServer(server_address, ThreadedHTTPRequestHandler)
     print(f"Starting threaded server on {host}:{port}")

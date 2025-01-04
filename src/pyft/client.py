@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from .utils import generate_token
+from pyft.utils import generate_token
 
 
 @dataclass

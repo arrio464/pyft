@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
-from .client import Core
+from pyft.client import Core
 
 
 class FileTransferGUI(Core):
@@ -435,7 +435,7 @@ class LoginGUI:
         # For example, you could call a function that attempts to log in and returns True or False
         # If the login is successful, proceed with generating token and opening the FileTransferGUI
         if self.validate_login(url, username, password):
-            from .utils import generate_token
+            from pyft.utils import generate_token
 
             token = generate_token(username, password)
             gui = FileTransferGUI(url, token)
